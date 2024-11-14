@@ -37,4 +37,4 @@ def get_user_info(id, pw):
     }
     return context
 
-print(get_user_info(21011622, "gbvsfy7z!"))
+print(get_user_info(학번, "비번"))
