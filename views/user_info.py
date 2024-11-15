@@ -41,3 +41,4 @@ def get_user_info(id: str, pw: str) -> dict:
         "major": major,
         "book": book
     }
+
