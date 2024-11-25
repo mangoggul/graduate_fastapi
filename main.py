@@ -5,8 +5,22 @@ import datetime
 import jwt
 import secrets
 from typing import Optional
+from fastapi.middleware.cors import CORSMiddleware  # CORS 미들웨어 import
 
 app = FastAPI()
+
+# CORS 미들웨어 추가
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000", 
+        "http://localhost:5173",
+                   
+        ],  # 모든 오리진 허용, 필요시 특정 도메인으로 제한 가능
+    allow_credentials=True,
+    allow_methods=["*"],  # 모든 HTTP 메서드 허용
+    allow_headers=["*"],  # 모든 헤더 허용
+)
 
 # JWT를 위한 비밀 키
 SECRET_KEY = secrets.token_hex(32)
