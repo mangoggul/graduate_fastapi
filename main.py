@@ -1,94 +1,139 @@
 from fastapi import FastAPI, HTTPException, Form, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from database.connect import get_db_connection
+from auth import create_jwt_token
 from views.user_info import get_user_info, UserInfoResponse
 from views.get_csv import read_excel_from_file
-import datetime
-import jwt
-import secrets
-from typing import Optional
-from fastapi.middleware.cors import CORSMiddleware  # CORS 미들웨어 import
-
+import mysql.connector
 app = FastAPI()
 
-# CORS 미들웨어 추가
+# CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000", 
-        "http://localhost:5173",
-                   
-        ],  # 모든 오리진 허용, 필요시 특정 도메인으로 제한 가능
+    allow_origins=["http://localhost:3000", "http://localhost:5173"],
     allow_credentials=True,
-    allow_methods=["*"],  # 모든 HTTP 메서드 허용
-    allow_headers=["*"],  # 모든 헤더 허용
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# JWT를 위한 비밀 키
-SECRET_KEY = secrets.token_hex(32)
+# CourseReview 모델 정의
+class CourseReview(BaseModel):
+    course_id: str
+    student_id: str
+    review_text: str
+    rating: int
 
-@app.get("/user_info/{user_id}", response_model=UserInfoResponse, tags=["get_user_info"])
+@app.post("/course/review", tags=['Course'])
+async def create_review(review: CourseReview):
+    """
+    강의 후기 작성 API
+    """
+    if not (1 <= review.rating <= 5):
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5.")
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            """
+            INSERT INTO course_review (course_id, user_id, comment, rating)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (review.course_id, review.student_id, review.review_text, review.rating),
+        )
+        connection.commit()
+    except mysql.connector.Error as err:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {err}")
+    finally:
+        cursor.close()
+        connection.close()
+
+    return {"status": "success", "message": "Review submitted successfully."}
+
+@app.get("/courses", tags=['Course'])
+async def get_all_courses():
+    """
+    데이터베이스에서 모든 강의 정보를 가져오는 API
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    try:
+        cursor.execute("SELECT * FROM course")  # `course` 테이블에서 모든 데이터를 가져오는 쿼리
+        courses = cursor.fetchall()
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Database error: {err}")
+    finally:
+        cursor.close()
+        connection.close()
+
+    if not courses:
+        raise HTTPException(status_code=404, detail="No courses found.")
+
+    return {"status": "success", "data": courses}
+
+@app.get("/courses/{course_id}/comments", tags=["Course"])
+async def get_comments_by_course_id(course_id: int):
+    """
+    특정 강의 ID(course_id)에 해당하는 모든 댓글을 가져오는 API
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    try:
+        # 댓글 데이터를 가져오는 SQL 쿼리
+        query = "SELECT * FROM course_review WHERE course_id = %s"
+        cursor.execute(query, (course_id,))
+        comments = cursor.fetchall()
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Database error: {err}")
+    finally:
+        cursor.close()
+        connection.close()
+
+    if not comments:
+        raise HTTPException(status_code=404, detail="No comments found for the given course ID.")
+
+    return {"status": "success", "data": comments}
+
+@app.post("/login", tags=['Auth'])
+async def login(student_id: str = Form(...), password: str = Form(...)):
+    """
+    로그인 API
+    """
+    user_info = get_user_info(id=student_id, pw=password)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid student ID or password.")
+
+    access_token = create_jwt_token(student_id, "access", expires_delta=1)
+    refresh_token = create_jwt_token(student_id, "refresh", expires_delta=7)
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
+
+@app.get("/user_info/{user_id}", response_model=UserInfoResponse, tags=["user_info"])
 async def get_user_info_endpoint(user_id: str, password: str):
     """
-    사용자 정보를 가져오는 API 엔드포인트입니다.
+    사용자 정보 조회 API
     """
     user_info = get_user_info(id=user_id, pw=password)
     if not user_info:
         raise HTTPException(status_code=404, detail="User not found.")
     return user_info
 
-def create_access_token(student_id: str, expires_delta: int = 1):
-    """
-    Access 토큰 생성 함수
-    """
-    payload = {
-        "sub": student_id,  # 사용자 ID
-        "type": "access",  # type을 'access'로 설정하여 access token임을 구분
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=expires_delta),  # 1시간 후 만료
-    }
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-
-
-def create_refresh_token(student_id: str, expires_delta: int = 7):
-    """
-    Refresh 토큰 생성 함수
-    """
-    payload = {
-        "sub": student_id,  # 사용자 ID
-        "type": "refresh",  # type을 'refresh'로 설정하여 refresh token임을 구분
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(days=expires_delta),  # 7일 후 만료
-    }
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-
-
-@app.post("/login")
-async def login(student_id: str = Form(...), password: str = Form(...)):
-    """
-    로그인 API: student_id와 password를 받아 인증 후 JWT 토큰을 반환합니다.
-    """
-    # 사용자 정보 가져오기
-    user_info = get_user_info(id=student_id, pw=password)
-    if not user_info:
-        raise HTTPException(status_code=401, detail="Invalid student ID or password.")
-    
-    # JWT 토큰 생성
-    access_token = create_access_token(student_id)  # 1시간 만료된 access token 생성
-    refresh_token = create_refresh_token(student_id)  # 7일 만료된 refresh token 생성
-    
-    return {
-        "refresh_token": refresh_token,
-        "access_token": access_token,
-        "token_type": "bearer",
-        "Connection": "Succeed"
-    }
-
-
-@app.post("/upload-excel")
+@app.post("/upload-excel", tags=['user_info'])
 async def upload_excel(file: UploadFile = File(...)):
     """
-    사용자가 업로드한 엑셀 파일을 읽어 JSON 형식으로 반환하는 API 엔드포인트입니다.
+    엑셀 파일 업로드 및 읽기 API
     """
     if not file.filename.endswith((".xls", ".xlsx")):
         raise HTTPException(status_code=400, detail="Invalid file format. Please upload an Excel file.")
     
-    # 엑셀 파일 읽기
     data = read_excel_from_file(file)
     return {"status": "success", "data": data}
