@@ -1,11 +1,12 @@
-from fastapi import FastAPI, HTTPException, Form, UploadFile, File
+from fastapi import FastAPI, HTTPException, Form, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from database.connect import get_db_connection
-from auth import create_jwt_token
+from auth import create_jwt_token, verify_refresh_token
 from views.user_info import get_user_info, UserInfoResponse
 from views.get_csv import read_excel_from_file
 import mysql.connector
+
 app = FastAPI()
 
 # CORS 설정
@@ -26,9 +27,6 @@ class CourseReview(BaseModel):
 
 @app.post("/course/review", tags=['Course'])
 async def create_review(review: CourseReview):
-    """
-    강의 후기 작성 API
-    """
     if not (1 <= review.rating <= 5):
         raise HTTPException(status_code=400, detail="Rating must be between 1 and 5.")
 
@@ -38,7 +36,7 @@ async def create_review(review: CourseReview):
     try:
         cursor.execute(
             """
-            INSERT INTO course_review (course_id, user_id, comment, rating)
+            INSERT INTO Course_Review (course_id, user_id, comment, rating)
             VALUES (%s, %s, %s, %s)
             """,
             (review.course_id, review.student_id, review.review_text, review.rating),
@@ -55,14 +53,11 @@ async def create_review(review: CourseReview):
 
 @app.get("/courses", tags=['Course'])
 async def get_all_courses():
-    """
-    데이터베이스에서 모든 강의 정보를 가져오는 API
-    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
     try:
-        cursor.execute("SELECT * FROM course")  # `course` 테이블에서 모든 데이터를 가져오는 쿼리
+        cursor.execute("SELECT * FROM Course")
         courses = cursor.fetchall()
     except mysql.connector.Error as err:
         raise HTTPException(status_code=500, detail=f"Database error: {err}")
@@ -77,15 +72,11 @@ async def get_all_courses():
 
 @app.get("/courses/{course_id}/comments", tags=["Course"])
 async def get_comments_by_course_id(course_id: int):
-    """
-    특정 강의 ID(course_id)에 해당하는 모든 댓글을 가져오는 API
-    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
     try:
-        # 댓글 데이터를 가져오는 SQL 쿼리
-        query = "SELECT * FROM course_review WHERE course_id = %s"
+        query = "SELECT * FROM Course_Review WHERE course_id = %s"
         cursor.execute(query, (course_id,))
         comments = cursor.fetchall()
     except mysql.connector.Error as err:
@@ -99,29 +90,47 @@ async def get_comments_by_course_id(course_id: int):
 
     return {"status": "success", "data": comments}
 
+
+
+#AUTHENTICATION
+
 @app.post("/login", tags=['Auth'])
 async def login(student_id: str = Form(...), password: str = Form(...)):
     """
-    로그인 API
+    로그인 API (Refresh Token만 반환)
     """
     user_info = get_user_info(id=student_id, pw=password)
     if not user_info:
         raise HTTPException(status_code=401, detail="Invalid student ID or password.")
 
-    access_token = create_jwt_token(student_id, "access", expires_delta=1)
     refresh_token = create_jwt_token(student_id, "refresh", expires_delta=7)
 
     return {
-        "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
     }
 
+@app.post("/token/refresh", tags=['Auth'])
+async def refresh_access_token(refresh_token: str = Form(...)):
+    """
+    Refresh Token을 사용해 Access Token을 발급하는 API
+    """
+    try:
+        payload = verify_refresh_token(refresh_token)
+        student_id = payload.get("sub")
+        if not student_id:
+            raise HTTPException(status_code=401, detail="Invalid refresh token.")
+
+        access_token = create_jwt_token(student_id, "access", expires_delta=1)
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid refresh token: {e}")
+
 @app.get("/user_info/{user_id}", response_model=UserInfoResponse, tags=["user_info"])
 async def get_user_info_endpoint(user_id: str, password: str):
-    """
-    사용자 정보 조회 API
-    """
     user_info = get_user_info(id=user_id, pw=password)
     if not user_info:
         raise HTTPException(status_code=404, detail="User not found.")
@@ -129,9 +138,6 @@ async def get_user_info_endpoint(user_id: str, password: str):
 
 @app.post("/upload-excel", tags=['user_info'])
 async def upload_excel(file: UploadFile = File(...)):
-    """
-    엑셀 파일 업로드 및 읽기 API
-    """
     if not file.filename.endswith((".xls", ".xlsx")):
         raise HTTPException(status_code=400, detail="Invalid file format. Please upload an Excel file.")
     

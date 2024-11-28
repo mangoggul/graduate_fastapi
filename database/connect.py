@@ -11,7 +11,6 @@ DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_NAME = os.getenv("DB_NAME")
 DB_PORT = int(os.getenv("DB_PORT", 3306))  # 기본 포트는 3306
-
 def get_db_connection():
     """
     MySQL 데이터베이스 연결을 생성합니다.
