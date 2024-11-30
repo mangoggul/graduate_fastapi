@@ -1,10 +1,12 @@
-from fastapi import FastAPI, HTTPException, Form, UploadFile, File, Depends
+from fastapi import FastAPI, HTTPException, Form, UploadFile, File, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from database.connect import get_db_connection
 from auth import create_jwt_token, verify_refresh_token
 from views.user_info import get_user_info, UserInfoResponse
 from views.get_csv import read_excel_from_file
+from fastapi import Header
+import jwt
 import mysql.connector
 
 app = FastAPI()
@@ -142,47 +144,194 @@ async def login(student_id: str = Form(...), password: str = Form(...)):
     """
     로그인 API (Refresh Token만 반환)
     """
-    user_info = get_user_info(id=student_id, pw=password)
-    if not user_info:
-        raise HTTPException(status_code=401, detail="Invalid student ID or password.")
-
-    refresh_token = create_jwt_token(student_id, "refresh", expires_delta=7)
-
-    return {
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-    }
-
-@app.post("/token/refresh", tags=['Auth'])
-async def refresh_access_token(refresh_token: str = Form(...)):
-    """
-    Refresh Token을 사용해 Access Token을 발급하는 API
-    """
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    
     try:
-        payload = verify_refresh_token(refresh_token)
-        student_id = payload.get("sub")
-        if not student_id:
-            raise HTTPException(status_code=401, detail="Invalid refresh token.")
+        # 사용자 정보 가져오기
+        user_info = get_user_info(id=student_id, pw=password)
+        if not user_info:
+            raise HTTPException(status_code=401, detail="Invalid student ID or password.")
 
-        access_token = create_jwt_token(student_id, "access", expires_delta=1)
+        # Refresh Token 생성
+        refresh_token = create_jwt_token(student_id, "refresh", expires_delta=7)
+        
+        # User 테이블 업데이트 쿼리
+        update_query = """
+            INSERT INTO User (user_id, username, refresh_token) 
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE 
+            username = VALUES(username),
+            refresh_token = VALUES(refresh_token)
+        """
+        cursor.execute(update_query, (
+            user_info['id'],
+            user_info['name'],
+            refresh_token
+        ))
+        connection.commit()
+
         return {
-            "access_token": access_token,
+            "refresh_token": refresh_token,
             "token_type": "bearer",
         }
+        
+    except HTTPException as e:
+        raise e
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Invalid refresh token: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        connection.close()
 
-@app.get("/user_info/{user_id}", response_model=UserInfoResponse, tags=["user_info"])
+@app.post("/token/refresh", tags=['Auth'])
+async def refresh_access_token(authorization: str = Header(default=None)):
+    """
+    일단 사용 X
+    """
+    try:
+        if not authorization or not authorization.startswith('Bearer '):
+            raise HTTPException(status_code=401, detail="Invalid authorization header format")
+            
+        refresh_token = authorization.split('Bearer ')[1]
+        
+        # DB에서 refresh token 확인
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        
+        try:
+            query = "SELECT user_id FROM User WHERE refresh_token = %s"
+            cursor.execute(query, (refresh_token,))
+            user = cursor.fetchone()
+            
+            if not user:
+                raise HTTPException(status_code=401, detail="Refresh token not found")
+                
+            # 토큰 검증
+            payload = verify_refresh_token(refresh_token)
+            student_id = payload.get("sub")
+            if not student_id:
+                raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+            # 새로운 access token 생성
+            access_token = create_jwt_token(student_id, "access", expires_delta=1)
+            
+            return {
+                "access_token": access_token,
+                "token_type": "bearer",
+            }
+            
+        finally:
+            cursor.close()
+            connection.close()
+            
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token has expired")
+    
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+@app.get("/user-info/{user_id}", response_model=UserInfoResponse, tags=["user_info"])
 async def get_user_info_endpoint(user_id: str, password: str):
+
+    """
+    학번과 비밀번호를 입력하면 그거에 관련한 정보 반환 : 학번, 이름, 전공, 고전독서
+    """
+
     user_info = get_user_info(id=user_id, pw=password)
     if not user_info:
         raise HTTPException(status_code=404, detail="User not found.")
     return user_info
 
-@app.post("/upload-excel", tags=['user_info'])
-async def upload_excel(file: UploadFile = File(...)):
+@app.post("/upload-excel", tags=['Excel'])
+async def upload_excel(file: UploadFile = File(...), student_id: str = Query(...)):
+
+    """
+    액셀 업로드 후 DB 에 저장
+    """
+
     if not file.filename.endswith((".xls", ".xlsx")):
         raise HTTPException(status_code=400, detail="Invalid file format. Please upload an Excel file.")
     
     data = read_excel_from_file(file)
-    return {"status": "success", "data": data}
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    print(data[3])
+
+    
+    try:
+        # 엑셀 파일의 각 행을 데이터베이스에 삽입
+        for i in range(3,len(data)) :
+
+            cursor.execute(
+                """
+                INSERT INTO course_data (
+                    user_id, year, semester, course_code, 
+                    course_name, course_type, credit, grade
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    student_id, # request에서 받은 학번
+                    data[i]['년도'],
+                    data[i]['학기'],
+                    data[i]['과목코드'],
+                    data[i]['과목명'],
+                    data[i]['이수구분'],
+                    data[i]['학점'],
+                    data[i]['평점'],
+                )
+            )
+
+        # 변경 사항 커밋
+        connection.commit()
+
+    except mysql.connector.Error as err:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {err}")
+    finally:
+        cursor.close()
+        connection.close()
+
+    return {"status": "success", "message": "Data inserted successfully."}
+
+
+
+@app.get("/get-course-data", tags=['Excel'])
+async def get_course_data(student_id: str = Query(...)):
+
+    """
+    학번을 넣고 수강한 과목 전부 반환
+    """
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)  # dictionary=True는 결과를 딕셔너리 형식으로 반환
+
+    try:
+        # student_id와 연관된 데이터를 조회하는 쿼리
+        cursor.execute(
+            """
+            SELECT *
+            FROM course_data
+            WHERE user_id = %s
+            """,
+            (student_id,)
+        )
+        
+        # 조회된 데이터 가져오기
+        result = cursor.fetchall()
+
+        # 데이터가 없을 경우
+        if not result:
+            raise HTTPException(status_code=404, detail="No data found for the provided student ID.")
+        
+        return {"status": "success", "data": result}
+    
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Database error: {err}")
+    
+    finally:
+        cursor.close()
+        connection.close()
+
+

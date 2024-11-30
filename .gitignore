@@ -3,3 +3,4 @@ sejong_data.xlsx
 sejong_data.csv
 Data_processing
 .env
+__pycache__

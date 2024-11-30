@@ -1,7 +1,7 @@
 from sejong_univ_auth import auth, ClassicSession
 from pydantic import BaseModel
 from fastapi import HTTPException
-
+from database.connect import get_db_connection
 # Pydantic 모델 정의
 class UserInfoResponse(BaseModel):
     id: str
@@ -11,6 +11,8 @@ class UserInfoResponse(BaseModel):
 
 # 사용자 정보를 반환하는 함수
 def get_user_info(id: str, pw: str) -> dict:
+    connection = get_db_connection()
+    cursor = connection.cursor()
     res = auth(id=id, password=pw, methods=ClassicSession)
 
     # 대휴칼 사이트 오류
