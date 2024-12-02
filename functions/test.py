@@ -1,122 +1,86 @@
+import random
 import pandas as pd
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
-from langchain.docstore.document import Document
-from langchain.prompts import PromptTemplate
 
-class CourseRecommender:
-    def __init__(self, csv_path):
-        self.df = pd.read_csv(csv_path)
-        self.user_preferences = {}
-        self.setup_qa_chain()
+
+def parse_courses(file_path, category):
+    """
+    파일에서 특정 학과의 강의를 파싱합니다.
+    """
+    with open(file_path, 'r', encoding='utf-8') as file:
+        lines = file.readlines()
     
-    def create_document_content(self, row):
-        content = []
-        for column in self.df.columns:
-            content.append(f"{column}: {row[column]}")
-        return "\n".join(content)
+    courses = []
+    for line in lines:
+        if line.startswith(category):
+            parts = line.split(",")
+            if len(parts) >= 7:  # 최소 데이터 검증
+                try:
+                    courses.append({
+                        "department": parts[0].strip(),
+                        "course_name": parts[1].strip(),
+                        "type": parts[2].strip(),
+                        "credits": float(parts[3].strip()),
+                        "time": parts[4].strip(),
+                        "location": parts[5].strip(),
+                        "professor": parts[6].strip()
+                    })
+                except ValueError:
+                    continue  # 학점이 비어 있는 경우 스킵
+    return courses
 
-    def setup_qa_chain(self):
-        # Document 객체 생성
-        documents = [
-            Document(
-                page_content=self.create_document_content(row),
-                metadata={"source": "sejong_data.csv", "index": idx}
-            ) for idx, row in self.df.iterrows()
-        ]
 
-        # 임베딩 및 벡터 저장소 설정
-        embeddings = OpenAIEmbeddings()
-        self.vector_store = FAISS.from_documents(documents, embeddings)
+def select_courses(courses, num_courses, target_credits):
+    """
+    주어진 강의 목록에서 일정 개수와 학점을 만족하도록 랜덤 선택.
+    """
+    selected_courses = []
+    total_credits = 0
+    while len(selected_courses) < num_courses and total_credits < target_credits:
+        course = random.choice(courses)
+        if course not in selected_courses:
+            selected_courses.append(course)
+            total_credits += course["credits"]
+    return selected_courses
 
-        # 프롬프트 템플릿 수정 - 사용자 선호도 정보 포함
-        prompt_template = """
-다음 context 정보와 사용자 선호도 정보를 사용하여 질문에 답변해주세요.
 
-Context: {context}
+def generate_timetable(file_path):
+    """
+    강의 데이터를 파싱하고, 랜덤으로 강의를 선택해 시간표를 생성합니다.
+    """
+    humanity_courses = parse_courses(file_path, "대양휴머니티칼리지")
+    cs_courses = parse_courses(file_path, "컴퓨터공학과")
+    sw_courses = parse_courses(file_path, "소프트웨어학과")
 
-사용자 선호도 정보:
-{user_preferences}
+    selected_humanity = select_courses(humanity_courses, num_courses=3, target_credits=9.0)
+    selected_cs = select_courses(cs_courses, num_courses=2, target_credits=6.0)
+    selected_sw = select_courses(sw_courses, num_courses=2, target_credits=6.0)
 
-질문: {question}
+    combined_timetable = selected_humanity + selected_cs + selected_sw
+    return combined_timetable
 
-답변 형식:
-1. 검색된 강의 수
-2. 각 강의의 상세 정보 (사용자 선호도를 고려하여 추천 순위 부여)
-3. 추천 이유 (사용자 선호도와의 연관성 포함)
 
-답변:
-"""
-        self.PROMPT = PromptTemplate(
-            template=prompt_template,
-            input_variables=["context", "question", "user_preferences"]
-        )
+def display_timetable(timetable):
+    """
+    시간표 데이터를 DataFrame으로 출력합니다.
+    """
+    df = pd.DataFrame(timetable)
+    print("\n=== Generated Timetable ===\n")
+    print(df)
+    return df
 
-        # QA 체인 설정
-        self.qa_chain = RetrievalQA.from_chain_type(
-            llm=ChatOpenAI(model="gpt-4o", temperature=0),
-            chain_type="stuff",
-            retriever=self.vector_store.as_retriever(search_kwargs={"k": 5}),
-            chain_type_kwargs={"prompt": self.PROMPT}
-        )
 
-    def add_user_preference(self, question, answer, weight=1.0):
-        """사용자의 응답을 preferences에 추가"""
-        self.user_preferences[question] = {
-            "answer": answer,
-            "weight": weight
-        }
-        
-    def format_user_preferences(self):
-        """사용자 선호도 정보를 문자열로 포맷팅"""
-        if not self.user_preferences:
-            return "사용자 선호도 정보가 없습니다."
-        
-        formatted = []
-        for question, data in self.user_preferences.items():
-            formatted.append(f"질문: {question}")
-            formatted.append(f"답변: {data['answer']}")
-            formatted.append(f"가중치: {data['weight']}")
-        return "\n".join(formatted)
-
-    def generate_recommendations(self, query):
-        """사용자 선호도를 반영한 추천 생성"""
-        try:
-            response = self.qa_chain({
-                "query": query,
-                "user_preferences": self.format_user_preferences()
-            })
-            return response
-        except Exception as e:
-            print(f"추천 생성 중 에러 발생: {str(e)}")
-            return None
-
-# 사용 예시
+# 메인 실행 부분
 def main():
-    # 추천 시스템 초기화
-    recommender = CourseRecommender("sejong_data.csv")
-    
-    # 사용자 선호도 수집 예시
-    sample_questions = [
-        ("당신의 선호하는 수업 시간대는 언제인가요?", "오전 9시-12시", 0.8),
-        ("선호하는 강의 형식은 무엇인가요? (온라인/오프라인)", "오프라인", 0.9),
-        ("특정 교수님의 강의를 선호하시나요?", "김교수님", 0.7),
-        ("선호하는 과목 분야가 있나요?", "프로그래밍", 1.0)
-    ]
-    
-    # 사용자 선호도 정보 추가
-    for question, answer, weight in sample_questions:
-        recommender.add_user_preference(question, answer, weight)
-    
-    # 추천 생성
-    recommendations = recommender.generate_recommendations(
-        "내 선호도에 맞는 시간표를 추천해주세요."
-    )
-    
-    if recommendations:
-        print("\n추천 결과:")
-        print(recommendations)
+    file_path = "../txt/course.txt"  # 강의 데이터가 담긴 파일 경로
+
+    # 시간표 생성
+    timetable = generate_timetable(file_path)
+    df = display_timetable(timetable)
+
+    # Excel로 저장
+    df.to_excel("selected_timetable.xlsx", index=False)
+    print("\n시간표가 'selected_timetable.xlsx'로 저장되었습니다!")
+
 
 if __name__ == "__main__":
     main()
