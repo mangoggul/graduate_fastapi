@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Form, UploadFile, File, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List, Optional
 from database.connect import get_db_connection
 from auth import create_jwt_token, verify_refresh_token
 from views.user_info import get_user_info, UserInfoResponse
@@ -335,3 +336,64 @@ async def get_course_data(student_id: str = Query(...)):
         connection.close()
 
 
+class QuestionSelection(BaseModel):
+    student_id: int
+    selected_questions: List[int]
+
+@app.post("/submit-questions", tags=["AI generate TimeTable"])
+async def submit_questions(selection: QuestionSelection):
+    # 1~5 범위 검증
+    if not all(1 <= question <= 5 for question in selection.selected_questions):
+        raise HTTPException(
+            status_code=400,
+            detail="Each selected question must be between 1 and 5."
+        )
+    
+    # 질문 개수 검증 (10개 고정)
+    if len(selection.selected_questions) != 10:
+        raise HTTPException(
+            status_code=400,
+            detail="You must select exactly 10 questions."
+        )
+    
+    # 처리 로직 (예: 데이터베이스 저장)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    
+    try:
+        cursor.execute(
+            """
+            INSERT INTO Questions (
+                user_id, firstQ, secondQ, thirdQ, fourthQ, fifthQ, sixthQ, seventhQ, eighthQ, ninthQ, tenthQ
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                selection.student_id,  # 요청에서 받은 학번 (user_id)
+                selection.selected_questions[0],  # 첫 번째 질문에 대한 답
+                selection.selected_questions[1],  # 두 번째 질문에 대한 답
+                selection.selected_questions[2],  # 세 번째 질문에 대한 답
+                selection.selected_questions[3],  # 네 번째 질문에 대한 답
+                selection.selected_questions[4],  # 다섯 번째 질문에 대한 답
+                selection.selected_questions[5],  # 여섯 번째 질문에 대한 답
+                selection.selected_questions[6],  # 일곱 번째 질문에 대한 답
+                selection.selected_questions[7],  # 여덟 번째 질문에 대한 답
+                selection.selected_questions[8],  # 아홉 번째 질문에 대한 답
+                selection.selected_questions[9],  # 열 번째 질문에 대한 답
+            )
+        )
+
+        # 변경 사항 커밋
+        connection.commit()
+
+    except mysql.connector.Error as err:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {err}")
+    finally:
+        cursor.close()
+        connection.close()
+
+    return {
+        "message": "Questions submitted successfully",
+        "user_id": selection.student_id,
+        "selected_questions": selection.selected_questions
+    }

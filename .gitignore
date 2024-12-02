@@ -4,3 +4,4 @@ sejong_data.csv
 Data_processing
 .env
 __pycache__
+views/__pycache__
