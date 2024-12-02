@@ -59,28 +59,25 @@ def generate_timetable(file_path):
     return combined_timetable
 
 
-def display_timetable(timetable):
+def generate_timetables(file_path, count):
     """
-    시간표 데이터를 DataFrame으로 출력합니다.
+    여러 개의 시간표를 생성합니다.
     """
-    df = pd.DataFrame(timetable)
-    print("\n=== Generated Timetable ===\n")
-    print(df)
-    return df
-
-
-# 메인 실행 부분
-def main():
-    file_path = "../txt/course.txt"  # 강의 데이터가 담긴 파일 경로
-
-    # 시간표 생성
-    timetable = generate_timetable(file_path)
-    df = display_timetable(timetable)
-
-    # Excel로 저장
-    df.to_excel("selected_timetable.xlsx", index=False)
-    print("\n시간표가 'selected_timetable.xlsx'로 저장되었습니다!")
+    timetables = []
+    for _ in range(count):
+        timetable = generate_timetable(file_path)
+        timetables.append(timetable)
+    return timetables
 
 
 if __name__ == "__main__":
-    main()
+    # 테스트 실행
+    file_path = "files.txt"  # 강의 데이터가 담긴 파일 경로
+    count = 3  # 생성할 시간표 수
+    timetables = generate_timetables(file_path, count)
+
+    # 결과 출력
+    for idx, timetable in enumerate(timetables, start=1):
+        print(f"\n=== Generated Timetable {idx} ===")
+        df = pd.DataFrame(timetable)
+        print(df)
