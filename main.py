@@ -9,6 +9,7 @@ from views.get_csv import read_excel_from_file
 from fastapi import Header
 import jwt
 import mysql.connector
+from functions.test import generate_timetables
 
 app = FastAPI()
 
@@ -397,3 +398,140 @@ async def submit_questions(selection: QuestionSelection):
         "user_id": selection.student_id,
         "selected_questions": selection.selected_questions
     }
+
+
+
+@app.get("/generate_timetable/{student_id}")
+async def generate_timetable_api(student_id: int):
+    """
+    FastAPI 엔드포인트: 학생 ID를 기반으로 시간표를 생성하고 DB에 저장합니다.
+    """
+    file_path = "txt/course.txt"  # 학생 ID별 강의 데이터 경로
+
+    try:
+        # 3개의 시간표를 생성
+        timetables = generate_timetables(file_path, count=3)
+
+        # DB 연결 및 데이터 삽입
+        connection = get_db_connection()
+        cursor = connection.cursor()
+
+        try:
+            # 기존 최대 course_set_id 확인
+            cursor.execute("SELECT IFNULL(MAX(course_set_id), 0) FROM timetables")
+            max_course_set_id = cursor.fetchone()[0]
+            max_course_set_id  = int(max_course_set_id)
+            next_course_set_id = max_course_set_id + 1
+
+            # 생성된 시간표 데이터 삽입
+            for timetable in timetables:
+                current_course_set_id = next_course_set_id
+                next_course_set_id += 1  # course_set_id를 순차적으로 증가
+                
+                for course in timetable:
+                    cursor.execute(
+                        """
+                        INSERT INTO timetables (
+                            student_id, course_set_id, department, course_name, type, credits, time, location, professor
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            student_id,
+                            current_course_set_id,
+                            course["department"],
+                            course["course_name"],
+                            course["type"],
+                            course["credits"],
+                            course["time"],
+                            course["location"],
+                            course["professor"],
+                        )
+                    )
+            connection.commit()
+
+        except Exception as e:
+            connection.rollback()
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        finally:
+            cursor.close()
+            connection.close()
+
+        # 반환 데이터에 course_set_id 추가
+        timetables_with_ids = [
+            {"course_set_id": index + max_course_set_id + 1, "timetable": timetable}
+            for index, timetable in enumerate(timetables)
+        ]
+
+        return {
+            "student_id": student_id,
+            "message" : "success",
+            "timetables": timetables_with_ids,
+        }
+
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"No course data found for student_id {student_id}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+
+@app.get("/get_timetables/{student_id}")
+async def get_timetables(student_id: int):
+    """
+    FastAPI 엔드포인트: student_id를 기반으로 timetables 테이블의 데이터를 검색합니다.
+    """
+    # DB 연결
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    try:
+        # 데이터베이스에서 시간표 검색
+        cursor.execute(
+            """
+            SELECT 
+                course_set_id, department, course_name, type, credits, time, location, professor
+            FROM timetables
+            WHERE student_id = %s
+            ORDER BY course_set_id
+            """,
+            (student_id,)
+        )
+        results = cursor.fetchall()
+
+        if not results:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No timetables found for student_id {student_id}"
+            )
+
+        # 데이터 그룹화 (course_set_id 기준)
+        grouped_timetables = {}
+        for row in results:
+            course_set_id = row["course_set_id"]
+            if course_set_id not in grouped_timetables:
+                grouped_timetables[course_set_id] = []
+            grouped_timetables[course_set_id].append({
+                "department": row["department"],
+                "course_name": row["course_name"],
+                "type": row["type"],
+                "credits": row["credits"],
+                "time": row["time"],
+                "location": row["location"],
+                "professor": row["professor"]
+            })
+
+        # 그룹화된 시간표를 리스트로 변환
+        saved_timetables = [
+            {"course_set_id": set_id, "timetable": timetable}
+            for set_id, timetable in grouped_timetables.items()
+        ]
+
+        return {
+            "student_id": student_id,
+            "timetables": saved_timetables
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+    finally:
+        cursor.close()
+        connection.close()
