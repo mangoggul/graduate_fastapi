@@ -259,7 +259,7 @@ async def upload_excel(file: UploadFile = File(...), student_id: str = Query(...
 
     connection = get_db_connection()
     cursor = connection.cursor()
-    print(data[3])
+    
 
     
     try:
@@ -270,8 +270,8 @@ async def upload_excel(file: UploadFile = File(...), student_id: str = Query(...
                 """
                 INSERT INTO course_data (
                     user_id, year, semester, course_code, 
-                    course_name, course_type, credit, grade
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    course_name, course_type, credit, grade, choice, grade_detail
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     student_id, # request에서 받은 학번
@@ -282,6 +282,8 @@ async def upload_excel(file: UploadFile = File(...), student_id: str = Query(...
                     data[i]['이수구분'],
                     data[i]['학점'],
                     data[i]['평점'],
+                    data[i]['비고2'],
+                    data[i]['성적등급']
                 )
             )
 
@@ -401,7 +403,7 @@ async def submit_questions(selection: QuestionSelection):
 
 
 
-@app.get("/generate_timetable/{student_id}")
+@app.get("/generate_timetable/{student_id}", tags=["AI generate TimeTable"])
 async def generate_timetable_api(student_id: int):
     """
     FastAPI 엔드포인트: 학생 ID를 기반으로 시간표를 생성하고 DB에 저장합니다.
@@ -474,7 +476,7 @@ async def generate_timetable_api(student_id: int):
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 
-@app.get("/get_timetables/{student_id}")
+@app.get("/get_timetables/{student_id}", tags=["AI generate TimeTable"])
 async def get_timetables(student_id: int):
     """
     FastAPI 엔드포인트: student_id를 기반으로 timetables 테이블의 데이터를 검색합니다.

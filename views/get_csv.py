@@ -51,10 +51,11 @@ def read_excel_from_file(file: UploadFile, sheet_name: Union[str, None] = None):
         
         # JSON으로 변환
         data = df.to_dict(orient="records")
-        
+        print(data)
         return data
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
