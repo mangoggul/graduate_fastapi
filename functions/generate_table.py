@@ -24,13 +24,9 @@ def read_course_data(file_path: str) -> List[Document]:
         raise Exception(f"파일 읽기 중 오류 발생: {str(e)}")
 
 def create_qa_chain(documents: List[Document]) -> RetrievalQA:
-    """
-    QA 체인 생성
-    """
-    # OpenAI 임베딩 생성
+
     embeddings = OpenAIEmbeddings()
     
-    # FAISS 벡터 저장소 생성
     vector_store = FAISS.from_documents(documents, embeddings)
     
     # 프롬프트 템플릿 정의
@@ -42,11 +38,10 @@ def create_qa_chain(documents: List[Document]) -> RetrievalQA:
     질문: {query}
 
     답변 형식:
-    1. 검색된 강의 수
-    2. 각 강의의 상세 정보
-    3. 요약된 정보 (있다면)
+    
+    1. 각 강의의 상세 정보
+    2. 요약된 정보
 
-    답변:
     """
     
     PROMPT = PromptTemplate(
@@ -54,9 +49,9 @@ def create_qa_chain(documents: List[Document]) -> RetrievalQA:
         input_variables=["context", "query"]
     )
     
-    # QA 체인 생성
+    
     qa_chain = RetrievalQA.from_chain_type(
-        llm=ChatOpenAI(model="gpt-4o", temperature=0),  # 모델명 수정
+        llm=ChatOpenAI(model="gpt-4o", temperature=0), 
         chain_type="stuff",
         retriever=vector_store.as_retriever(
             search_kwargs={"k": 5}
@@ -98,21 +93,16 @@ def ask_questions(qa_chain: RetrievalQA, questions: List[str]) -> None:
 
 def main():
     try:
-        # 파일 경로 설정
+
         file_path = "../txt/course.txt"
         
-        # 코스 데이터 읽기
         documents = read_course_data(file_path)
         
-        # QA 체인 생성
         qa_chain = create_qa_chain(documents)
         
-        # 시간표 생성
         schedule = generate_schedule(qa_chain)
-        if schedule:
-            print("\n생성된 시간표:")
-            print(schedule)
         
+        return schedule
         
     except Exception as e:
         print(f"프로그램 실행 중 오류 발생: {str(e)}")

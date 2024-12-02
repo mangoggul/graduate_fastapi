@@ -10,6 +10,13 @@ from fastapi import Header
 import jwt
 import mysql.connector
 from functions.test import generate_timetables
+import os
+import traceback
+from langchain.chat_models import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate 
+from langchain.schema import SystemMessage, HumanMessage
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
 
@@ -343,8 +350,19 @@ class QuestionSelection(BaseModel):
     student_id: int
     selected_questions: List[int]
 
+
+# 요청 데이터 모델 정의
+class QuestionSelection(BaseModel):
+    student_id: int
+    selected_questions: List[int]
+
 @app.post("/submit-questions", tags=["AI generate TimeTable"])
 async def submit_questions(selection: QuestionSelection):
+
+    """
+    사용자는 질문에 대한 답을 하고 여기서 바로 ciffy comment ai로 만들어버림
+    반드시 이 API 사용 후에 하단 API 이용해야됨 반드시 !!!!
+    """
     # 1~5 범위 검증
     if not all(1 <= question <= 5 for question in selection.selected_questions):
         raise HTTPException(
@@ -359,11 +377,60 @@ async def submit_questions(selection: QuestionSelection):
             detail="You must select exactly 10 questions."
         )
     
-    # 처리 로직 (예: 데이터베이스 저장)
+    # 질문 내용
+    questions = [
+        "팀플 수업이 많았으면 좋겠다.",
+        "시험보단 과제로 평가가 되었으면 좋겠다.",
+        "수업 내용이 실제 업무에 도움이 되는 수업을 선호한다.",
+        "수업이 이론보다는 실습 위주로 진행되면 좋겠다.",
+        "영어 수업을 선호한다.",
+        "후기가 많은 과목이 좋다.",
+        "졸업을 위한 필수 과목을 많이 들어야한다.",
+        "교양이 많았으면 좋겠다.",
+        "시험이 어려운 수업이 좋다.",
+        "교수님이 학생들과의 소통을 중요시하는 수업을 선호한다."
+    ]
+    
+    # 선택된 질문의 텍스트 생성
+    selected_questions_text = [questions[q - 1] for q in selection.selected_questions]
+    prompt_text = (
+        "다음은 학생의 선호도를 나타내는 질문 목록입니다. "
+        
+        "이 학생의 선호도를 요약하여 한국어로 한줄평을 작성해주세요:\n\n" +
+        "\n".join(f"{i + 1}. {text}" for i, text in enumerate(selected_questions_text))
+    )
+    
+    # LangChain Chat 모델 초기화
+    ai_model = ChatOpenAI(
+        model="gpt-4o",
+        temperature=0.7,
+        openai_api_key=OPENAI_API_KEY
+    )
+    
+    # 3개의 댓글 생성
+    ai_comments = []
+    try:
+        for _ in range(3):
+            # 메시지 생성
+            messages = [
+                SystemMessage(content="당신은 학생의 선호도를 요약하여 한국어로 한줄평을 작성하는 AI입니다."),
+                HumanMessage(content=prompt_text)
+            ]
+            
+            # LangChain 모델을 통해 응답 생성
+            response = ai_model(messages)
+            ai_comments.append(response.content.strip())
+    except Exception as e:
+        # 에러 처리
+        error_details = traceback.format_exc()
+        raise HTTPException(status_code=500, detail=f"Error communicating with GPT: {e}\nDetails: {error_details}")
+    
+    # DB 저장
     connection = get_db_connection()
     cursor = connection.cursor()
     
     try:
+        # Questions 테이블에 저장
         cursor.execute(
             """
             INSERT INTO Questions (
@@ -371,23 +438,32 @@ async def submit_questions(selection: QuestionSelection):
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
-                selection.student_id,  # 요청에서 받은 학번 (user_id)
-                selection.selected_questions[0],  # 첫 번째 질문에 대한 답
-                selection.selected_questions[1],  # 두 번째 질문에 대한 답
-                selection.selected_questions[2],  # 세 번째 질문에 대한 답
-                selection.selected_questions[3],  # 네 번째 질문에 대한 답
-                selection.selected_questions[4],  # 다섯 번째 질문에 대한 답
-                selection.selected_questions[5],  # 여섯 번째 질문에 대한 답
-                selection.selected_questions[6],  # 일곱 번째 질문에 대한 답
-                selection.selected_questions[7],  # 여덟 번째 질문에 대한 답
-                selection.selected_questions[8],  # 아홉 번째 질문에 대한 답
-                selection.selected_questions[9],  # 열 번째 질문에 대한 답
+                selection.student_id,
+                selection.selected_questions[0],
+                selection.selected_questions[1],
+                selection.selected_questions[2],
+                selection.selected_questions[3],
+                selection.selected_questions[4],
+                selection.selected_questions[5],
+                selection.selected_questions[6],
+                selection.selected_questions[7],
+                selection.selected_questions[8],
+                selection.selected_questions[9],
             )
         )
-
+        question_id = cursor.lastrowid
+        # ciffy_comment 테이블에 댓글 3개 저장
+        for comment in ai_comments:
+            cursor.execute(
+                """
+                INSERT INTO ciffy_comment (question_id, comment)
+                VALUES (%s, %s)
+                """,
+                (question_id, comment)
+            )
+        
         # 변경 사항 커밋
         connection.commit()
-
     except mysql.connector.Error as err:
         connection.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {err}")
@@ -398,15 +474,15 @@ async def submit_questions(selection: QuestionSelection):
     return {
         "message": "Questions submitted successfully",
         "user_id": selection.student_id,
-        "selected_questions": selection.selected_questions
+        "selected_questions": selection.selected_questions,
+        "ai_comments": ai_comments
     }
 
-
-
-@app.get("/generate_timetable/{student_id}", tags=["AI generate TimeTable"])
+@app.get("/generate-timetable/{student_id}", tags=["AI generate TimeTable"])
 async def generate_timetable_api(student_id: int):
     """
-    FastAPI 엔드포인트: 학생 ID를 기반으로 시간표를 생성하고 DB에 저장합니다.
+    학생 ID 던지면 그거에 맞는 테이블 DB 에 저장
+    이거 먼저 쓰면 절대 안됨 위에 API 먼저 사용하고 이거 사용해야됨 둘이 햄버거와 콜라임
     """
     file_path = "txt/course.txt"  # 학생 ID별 강의 데이터 경로
 
@@ -476,17 +552,17 @@ async def generate_timetable_api(student_id: int):
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 
-@app.get("/get_timetables/{student_id}", tags=["AI generate TimeTable"])
+@app.get("/get-timetables/{student_id}", tags=["AI generate TimeTable"])
 async def get_timetables(student_id: int):
     """
-    FastAPI 엔드포인트: student_id를 기반으로 timetables 테이블의 데이터를 검색합니다.
+    student_id 를 던지면 그거에 매핑된 course와 CIFFY comment 반환
     """
     # DB 연결
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
     try:
-        # 데이터베이스에서 시간표 검색
+        # timetables 데이터 검색
         cursor.execute(
             """
             SELECT 
@@ -497,21 +573,53 @@ async def get_timetables(student_id: int):
             """,
             (student_id,)
         )
-        results = cursor.fetchall()
+        timetable_results = cursor.fetchall()
 
-        if not results:
+        if not timetable_results:
             raise HTTPException(
                 status_code=404,
                 detail=f"No timetables found for student_id {student_id}"
             )
 
-        # 데이터 그룹화 (course_set_id 기준)
+        # ciffy_comment에서 관련 댓글 검색
+        cursor.execute(
+            """
+            SELECT 
+                question_id AS course_set_id, comment
+            FROM ciffy_comment
+            WHERE question_id IN (
+                SELECT DISTINCT course_set_id FROM timetables WHERE student_id = %s
+            )
+            ORDER BY question_id, comment
+            """,
+            (student_id,)
+        )
+        comment_results = cursor.fetchall()
+        print(comment_results)
+        comment_list = [entry['comment'] for entry in comment_results]
+        print(comment_list)
+        # course_set_id에 따라 댓글을 순서대로 매핑
+        comments_by_course_set_id = {}
+        comment_index = 0  # 댓글 순서 트래킹
+        for row in timetable_results:
+            course_set_id = row["course_set_id"]
+            if comment_index < len(comment_results):
+                # 각 course_set_id에 하나씩 댓글 매핑
+                comment_row = comment_results[comment_index]
+                if comment_row["course_set_id"] == course_set_id:
+                    comments_by_course_set_id[course_set_id] = [{"comment": comment_row["comment"]}]
+                    comment_index += 1
+            else:
+                # 댓글이 더 이상 없으면 빈 리스트
+                comments_by_course_set_id[course_set_id] = []
+
+        # timetables 데이터를 그룹화 (course_set_id 기준)
         grouped_timetables = {}
-        for row in results:
+        for row in timetable_results:
             course_set_id = row["course_set_id"]
             if course_set_id not in grouped_timetables:
-                grouped_timetables[course_set_id] = []
-            grouped_timetables[course_set_id].append({
+                grouped_timetables[course_set_id] = {"timetable": [], "comments": []}
+            grouped_timetables[course_set_id]["timetable"].append({
                 "department": row["department"],
                 "course_name": row["course_name"],
                 "type": row["type"],
@@ -520,16 +628,21 @@ async def get_timetables(student_id: int):
                 "location": row["location"],
                 "professor": row["professor"]
             })
-
-        # 그룹화된 시간표를 리스트로 변환
+            # 관련 댓글 추가
+            grouped_timetables[course_set_id]["comments"] = comments_by_course_set_id.get(course_set_id, [])
+        # 그룹화된 데이터 변환
         saved_timetables = [
-            {"course_set_id": set_id, "timetable": timetable}
-            for set_id, timetable in grouped_timetables.items()
+            {
+                "course_set_id": set_id,
+                "timetable": data["timetable"],
+            }
+            for set_id, data in grouped_timetables.items()
         ]
 
         return {
             "student_id": student_id,
-            "timetables": saved_timetables
+            "timetables": saved_timetables,
+            "comments" : comment_list
         }
 
     except Exception as e:
@@ -537,3 +650,5 @@ async def get_timetables(student_id: int):
     finally:
         cursor.close()
         connection.close()
+
+
