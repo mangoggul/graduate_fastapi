@@ -5,3 +5,4 @@ Data_processing
 .env
 __pycache__
 views/__pycache__
+functions/__pycache__
