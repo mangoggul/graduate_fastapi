@@ -351,14 +351,9 @@ class QuestionSelection(BaseModel):
     selected_questions: List[int]
 
 
-# 요청 데이터 모델 정의
-class QuestionSelection(BaseModel):
-    student_id: int
-    selected_questions: List[int]
 
-@app.post("/submit-questions", tags=["AI generate TimeTable"])
+@app.post("/submit-questions-new", tags=["AI generate TimeTable"])
 async def submit_questions(selection: QuestionSelection):
-
     """
     사용자는 질문에 대한 답을 하고 여기서 바로 ciffy comment ai로 만들어버림
     반드시 이 API 사용 후에 하단 API 이용해야됨 반드시 !!!!
@@ -395,7 +390,6 @@ async def submit_questions(selection: QuestionSelection):
     selected_questions_text = [questions[q - 1] for q in selection.selected_questions]
     prompt_text = (
         "다음은 학생의 선호도를 나타내는 질문 목록입니다. "
-        
         "이 학생의 선호도를 요약하여 한국어로 한줄평을 작성해주세요:\n\n" +
         "\n".join(f"{i + 1}. {text}" for i, text in enumerate(selected_questions_text))
     )
@@ -407,19 +401,17 @@ async def submit_questions(selection: QuestionSelection):
         openai_api_key=OPENAI_API_KEY
     )
     
-    # 3개의 댓글 생성
-    ai_comments = []
+    # 댓글 생성 (1개만)
     try:
-        for _ in range(3):
-            # 메시지 생성
-            messages = [
-                SystemMessage(content="당신은 학생의 선호도를 요약하여 한국어로 한줄평을 작성하는 AI입니다."),
-                HumanMessage(content=prompt_text)
-            ]
-            
-            # LangChain 모델을 통해 응답 생성
-            response = ai_model(messages)
-            ai_comments.append(response.content.strip())
+        # 메시지 생성
+        messages = [
+            SystemMessage(content="당신은 학생의 선호도를 요약하여 한국어로 한줄평을 작성하는 AI입니다."),
+            HumanMessage(content=prompt_text)
+        ]
+        
+        # LangChain 모델을 통해 응답 생성
+        response = ai_model(messages)
+        ai_comment = response.content.strip()
     except Exception as e:
         # 에러 처리
         error_details = traceback.format_exc()
@@ -452,15 +444,14 @@ async def submit_questions(selection: QuestionSelection):
             )
         )
         question_id = cursor.lastrowid
-        # ciffy_comment 테이블에 댓글 3개 저장
-        for comment in ai_comments:
-            cursor.execute(
-                """
-                INSERT INTO ciffy_comment (question_id, comment)
-                VALUES (%s, %s)
-                """,
-                (question_id, comment)
-            )
+        # ciffy_comment 테이블에 댓글 1개 저장
+        cursor.execute(
+            """
+            INSERT INTO ciffy_comment (question_id, comment)
+            VALUES (%s, %s)
+            """,
+            (question_id, ai_comment)
+        )
         
         # 변경 사항 커밋
         connection.commit()
@@ -475,8 +466,9 @@ async def submit_questions(selection: QuestionSelection):
         "message": "Questions submitted successfully",
         "user_id": selection.student_id,
         "selected_questions": selection.selected_questions,
-        "ai_comments": ai_comments
+        "ai_comment": ai_comment
     }
+
 
 @app.get("/generate-timetable/{student_id}", tags=["AI generate TimeTable"])
 async def generate_timetable_api(student_id: int):
@@ -490,60 +482,19 @@ async def generate_timetable_api(student_id: int):
         # 3개의 시간표를 생성
         timetables = generate_timetables(file_path, count=3)
 
-        # DB 연결 및 데이터 삽입
-        connection = get_db_connection()
-        cursor = connection.cursor()
-
-        try:
-            # 기존 최대 course_set_id 확인
-            cursor.execute("SELECT IFNULL(MAX(course_set_id), 0) FROM timetables")
-            max_course_set_id = cursor.fetchone()[0]
-            max_course_set_id  = int(max_course_set_id)
-            next_course_set_id = max_course_set_id + 1
-
-            # 생성된 시간표 데이터 삽입
-            for timetable in timetables:
-                current_course_set_id = next_course_set_id
-                next_course_set_id += 1  # course_set_id를 순차적으로 증가
-                
-                for course in timetable:
-                    cursor.execute(
-                        """
-                        INSERT INTO timetables (
-                            student_id, course_set_id, department, course_name, type, credits, time, location, professor
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            student_id,
-                            current_course_set_id,
-                            course["department"],
-                            course["course_name"],
-                            course["type"],
-                            course["credits"],
-                            course["time"],
-                            course["location"],
-                            course["professor"],
-                        )
-                    )
-            connection.commit()
-
-        except Exception as e:
-            connection.rollback()
-            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-        finally:
-            cursor.close()
-            connection.close()
-
-        # 반환 데이터에 course_set_id 추가
-        timetables_with_ids = [
-            {"course_set_id": index + max_course_set_id + 1, "timetable": timetable}
-            for index, timetable in enumerate(timetables)
+        # 각 시간표에 choice_id 추가
+        timetables_with_choice_id = [
+            {
+                "choice_id": idx + 1,
+                "timetable": timetable
+            }
+            for idx, timetable in enumerate(timetables)
         ]
 
         return {
             "student_id": student_id,
-            "message" : "success",
-            "timetables": timetables_with_ids,
+            "message": "success",
+            "timetables": timetables_with_choice_id
         }
 
     except FileNotFoundError:
@@ -551,104 +502,157 @@ async def generate_timetable_api(student_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
+class TimetableSaveRequest(BaseModel):
+    student_id: int
+    choice_id: int
 
-@app.get("/get-timetables/{student_id}", tags=["AI generate TimeTable"])
-async def get_timetables(student_id: int):
+    class Config:
+        schema_extra = {
+            "example": {
+                "student_id": 21011622,
+                "choice_id": 1
+            }
+        }
+
+
+# 시간표 데이터 구조 정의
+class Course(BaseModel):
+    department: str
+    course_name: str
+    type: str
+    credits: int
+    time: str
+    location: str
+    professor: str
+
+class TimetableSaveRequest(BaseModel):
+    student_id: int
+    choice_id: int
+    timetable: List[Course]
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "student_id": 21011622,
+                "choice_id": 1,
+                "timetable": [
+                    {
+                        "department": "대양휴머니티칼리지",
+                        "course_name": "생명과학의이해",
+                        "type": "균형교양필수",
+                        "credits": 3,
+                        "time": "목 19:00~20:00",
+                        "location": "광208",
+                        "professor": "임태규"
+                    }
+                ]
+            }
+        }
+
+# POST 요청: 선택된 시간표 저장
+@app.post("/save-timetable", tags=["AI generate TimeTable"])
+async def save_timetable(payload: TimetableSaveRequest):
     """
-    student_id 를 던지면 그거에 매핑된 course와 CIFFY comment 반환
+    선택된 시간표를 DB에 저장하는 API. 동일한 course_set_id를 한 번에 부여.
+    """
+    student_id = payload.student_id
+    choice_id = payload.choice_id
+    timetable = payload.timetable
+
+    # DB 연결
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    try:
+        # 마지막 course_set_id 값을 가져옴
+        cursor.execute("SELECT IFNULL(MAX(course_set_id), 0) FROM timetables")
+        last_course_set_id = cursor.fetchone()[0]
+        print(last_course_set_id)
+        # 새로운 course_set_id 생성
+        new_course_set_id = last_course_set_id + 1
+
+
+        
+        # 동일한 course_set_id로 모든 레코드 삽입
+        for course in timetable:
+            cursor.execute(
+                """
+                INSERT INTO timetables (
+                    course_set_id, student_id, choice_id, department, course_name, type, credits, time, location, professor
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    new_course_set_id,  # 동일한 course_set_id
+                    student_id,
+                    choice_id,
+                    course.department,
+                    course.course_name,
+                    course.type,
+                    course.credits,
+                    course.time,
+                    course.location,
+                    course.professor
+                )
+            )
+        connection.commit()
+
+    except Exception as e:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        cursor.close()
+        connection.close()
+
+    return {
+        "message": "Timetable saved successfully",
+        "student_id": student_id,
+        "choice_id": choice_id,
+        "course_set_id": new_course_set_id,
+        "saved_timetable": timetable
+    }
+
+
+class CommentResponse(BaseModel):
+    course_set_id: int
+    comments: List[str]
+
+@app.get("/get-comments/{course_set_id}", response_model=CommentResponse, tags=["AI generate TimeTable"])
+async def get_comments(course_set_id: int):
+    """
+    course_set_id에 해당하는 ciffy_comment 테이블의 댓글을 가져오는 API.
     """
     # DB 연결
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
     try:
-        # timetables 데이터 검색
+        # ciffy_comment 테이블에서 댓글 검색
         cursor.execute(
             """
-            SELECT 
-                course_set_id, department, course_name, type, credits, time, location, professor
-            FROM timetables
-            WHERE student_id = %s
-            ORDER BY course_set_id
+            SELECT comment
+            FROM ciffy_comment
+            WHERE question_id = %s
             """,
-            (student_id,)
+            (course_set_id,)
         )
-        timetable_results = cursor.fetchall()
+        comments = cursor.fetchall()
 
-        if not timetable_results:
+        if not comments:
             raise HTTPException(
                 status_code=404,
-                detail=f"No timetables found for student_id {student_id}"
+                detail=f"No comments found for course_set_id {course_set_id}"
             )
 
-        # ciffy_comment에서 관련 댓글 검색
-        cursor.execute(
-            """
-            SELECT 
-                question_id AS course_set_id, comment
-            FROM ciffy_comment
-            WHERE question_id IN (
-                SELECT DISTINCT course_set_id FROM timetables WHERE student_id = %s
-            )
-            ORDER BY question_id, comment
-            """,
-            (student_id,)
-        )
-        comment_results = cursor.fetchall()
-        print(comment_results)
-        comment_list = [entry['comment'] for entry in comment_results]
-        print(comment_list)
-        # course_set_id에 따라 댓글을 순서대로 매핑
-        comments_by_course_set_id = {}
-        comment_index = 0  # 댓글 순서 트래킹
-        for row in timetable_results:
-            course_set_id = row["course_set_id"]
-            if comment_index < len(comment_results):
-                # 각 course_set_id에 하나씩 댓글 매핑
-                comment_row = comment_results[comment_index]
-                if comment_row["course_set_id"] == course_set_id:
-                    comments_by_course_set_id[course_set_id] = [{"comment": comment_row["comment"]}]
-                    comment_index += 1
-            else:
-                # 댓글이 더 이상 없으면 빈 리스트
-                comments_by_course_set_id[course_set_id] = []
-
-        # timetables 데이터를 그룹화 (course_set_id 기준)
-        grouped_timetables = {}
-        for row in timetable_results:
-            course_set_id = row["course_set_id"]
-            if course_set_id not in grouped_timetables:
-                grouped_timetables[course_set_id] = {"timetable": [], "comments": []}
-            grouped_timetables[course_set_id]["timetable"].append({
-                "department": row["department"],
-                "course_name": row["course_name"],
-                "type": row["type"],
-                "credits": row["credits"],
-                "time": row["time"],
-                "location": row["location"],
-                "professor": row["professor"]
-            })
-            # 관련 댓글 추가
-            grouped_timetables[course_set_id]["comments"] = comments_by_course_set_id.get(course_set_id, [])
-        # 그룹화된 데이터 변환
-        saved_timetables = [
-            {
-                "course_set_id": set_id,
-                "timetable": data["timetable"],
-            }
-            for set_id, data in grouped_timetables.items()
-        ]
+        # 댓글 리스트 생성
+        comment_list = [comment["comment"] for comment in comments]
 
         return {
-            "student_id": student_id,
-            "timetables": saved_timetables,
-            "comments" : comment_list
+            "course_set_id": course_set_id,
+            "comments": comment_list
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         cursor.close()
         connection.close()
-
-
