@@ -656,3 +656,57 @@ async def get_comments(course_set_id: int):
     finally:
         cursor.close()
         connection.close()
+
+class TimetableEntry(BaseModel):
+    course_set_id: int
+    student_id: int
+    choice_id: int
+    department: str
+    course_name: str
+    type: str
+    credits: int
+    time: str
+    location: str
+    professor: str
+
+class TableResponse(BaseModel):
+    timetables: List[TimetableEntry]
+
+@app.get("/get-timetables/{student_id}", response_model=TableResponse, tags=["AI generate TimeTable"])
+async def get_timetables(student_id: int):
+    """
+    student_id에 해당하는 모든 시간표를 가져오는 API.
+    """
+    # DB 연결
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    try:
+        # timetables 테이블에서 student_id와 연관된 데이터 검색
+        cursor.execute(
+            """
+            SELECT *
+            FROM timetables
+            WHERE student_id = %s
+            ORDER BY course_set_id
+            """,
+            (student_id,)
+        )
+        timetables = cursor.fetchall()
+
+        if not timetables:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No timetables found for student_id {student_id}"
+            )
+
+        # 응답 데이터 형식 맞춤
+        return {
+            "timetables": timetables,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        cursor.close()
+        connection.close()
